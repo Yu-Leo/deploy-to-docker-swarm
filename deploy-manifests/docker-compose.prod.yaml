@@ -1,0 +1,162 @@
+version: "3.9"
+
+services:
+  postgres:
+    hostname: postgres
+    image: postgres:16.3-alpine
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: project-prod
+      POSTGRES_PASSWORD_FILE: /run/secrets/project-prod-postgres-passwd
+      POSTGRES_DB: PROJECT
+    volumes:
+      - /data/PROJECT-NAME/data/prod/postgres:/var/lib/postgresql/data
+    secrets:
+      - project-prod-postgres-passwd
+    deploy:
+      replicas: 1
+      restart_policy:
+        delay: 5s
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        delay: 10s
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+      resources:
+        limits:
+          cpus: "1"
+          memory: "800M"
+    healthcheck:
+      test: [ "CMD-SHELL", "sh -c 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}'" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  backend:
+    hostname: backend
+    image: ${REGISTRY}/PROJECT-NAME/backend/backend:20240727_a5fa34c7
+    configs:
+      - source: backend-config
+        target: /app/config.toml
+    secrets:
+      - project-prod-postgres-passwd
+    environment:
+      DB_PASS_FILE: /run/secrets/project-prod-postgres-passwd
+    deploy:
+      replicas: 1
+      restart_policy:
+        delay: 5s
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        delay: 10s
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+      resources:
+        limits:
+          cpus: "0.7"
+          memory: "800M"
+    healthcheck:
+      test: curl --fail http://127.0.0.1:8080/api/service/ping || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - postgres
+  frontend:
+    image: ${REGISTRY}/PROJECT-NAME/frontend/front:20240723_75abac12
+    deploy:
+      replicas: 1
+      restart_policy:
+        delay: 5s
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        delay: 10s
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: "200M"
+    healthcheck:
+      test: curl --fail http://127.0.0.1:80/about || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - backend
+  nginx-proxy:
+    image: nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - NGINX_PORT=80
+    configs:
+      - source: nginx-proxy-config
+        target: /etc/nginx/conf.d/default.conf
+    secrets:
+      - source: project-prod-nginx-proxy-ca-crt
+        target: /etc/nginx/ssl/ca.crt
+      - source: project-prod-nginx-proxy-project-crt
+        target: /etc/nginx/ssl/hostname.crt
+      - source: project-prod-nginx-proxy-project-key
+        target: /etc/nginx/ssl/hostname.key
+    deploy:
+      replicas: 1
+      restart_policy:
+        delay: 5s
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        delay: 10s
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+      resources:
+        limits:
+          cpus: "0.7"
+          memory: "400M"
+    healthcheck:
+      test: curl --fail http://127.0.0.1:80/health || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - frontend
+      - backend
+networks:
+  default:
+    attachable: true
+
+configs:
+  nginx-proxy-config:
+    name: ${PROJECT_PROD_NGINX_PROXY_CONFIG}
+    file: ./prod/nginx-proxy/default.conf
+  backend-config:
+    name: ${PROJECT_PROD_BACKEND_CONFIG}
+    file: ./prod/backend/config.toml
+
+secrets:
+  project-prod-postgres-passwd:
+    external: true
+  project-prod-nginx-proxy-ca-crt:
+    external: true
+  project-prod-nginx-proxy-project-crt:
+    external: true
+  project-prod-nginx-proxy-project-key:
+    external: true

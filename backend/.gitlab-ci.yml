@@ -1,0 +1,95 @@
+stages:
+  - build-lint-test
+  - docker-images
+
+build-lint-test:
+  timeout: 5m
+  stage: build-lint-test
+  image: golang:1.22
+  allow_failure: false
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /tests/ || $CI_MERGE_REQUEST_LABELS =~ /build-*/
+      when: always
+    - if: $CI_MERGE_REQUEST_ID
+      when: manual
+  before_script:
+    - mkdir -p .go-path .go-cache
+    - export GOPATH="$CI_PROJECT_DIR/.go-path"
+    - export GOCACHE="$CI_PROJECT_DIR/.go-cache"
+    - go version
+    - make start
+  script:
+    - make build-lint-test DAEMON=all
+
+  artifacts:
+    paths:
+      - build/
+
+  cache:
+    - key:
+        files:
+          - go.mod
+          - Makefile
+      paths:
+        - .go-path/
+
+    - key:
+        files:
+          - "*.go"
+          - go.mod
+      paths:
+        - .go-cache/
+
+docker-images:
+  timeout: 5m
+  stage: docker-images
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /build-*/
+      when: always
+    - if: $CI_MERGE_REQUEST_ID
+      when: manual
+  allow_failure: false
+  needs:
+    - job: build-lint-test
+      artifacts: true
+
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+
+  before_script:
+    - apk --no-cache add curl grep
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY --username $CI_REGISTRY_USER --password-stdin
+
+  script:
+    - >
+      for daemon in $(echo "$CI_MERGE_REQUEST_LABELS" | grep -Po "(?<=build-)\w*"); do
+        if [ -f ./$daemon/Dockerfile ]; then
+          echo "Build DAEMON=$daemon with custom Dockerfile"
+          docker build -t $CI_REGISTRY_IMAGE/$daemon:$(cat build/build_version.tmp) -f ./$daemon/Dockerfile .
+        else
+          echo "Build DAEMON=$daemon with common Dockerfile"
+          docker build -t $CI_REGISTRY_IMAGE/$daemon:$(cat build/build_version.tmp) -f ./Dockerfile --build-arg DAEMON=$daemon .
+        fi
+        echo "Push image DAEMON=$daemon"
+        docker push $CI_REGISTRY_IMAGE/$daemon:$(cat build/build_version.tmp)
+      done
+  after_script:
+    - >
+      if [ $CI_JOB_STATUS == 'success' ]; then
+        for daemon in $(echo "$CI_MERGE_REQUEST_LABELS" | grep -Po "(?<=build-)\w*"); do
+          curl \
+            --location \
+            --request POST "https://gitlab.com/api/v4/projects/$CI_MERGE_REQUEST_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes" \
+            --header "PRIVATE-TOKEN: $MY_GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data-raw "{ \"body\": \":white_check_mark: **$daemon** image was successfully built. Tag: **$(cat build/build_version.tmp)**\" }"
+        done
+      else
+          curl \
+            --location \
+            --request POST "https://gitlab.com/api/v4/projects/$CI_MERGE_REQUEST_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes" \
+            --header "PRIVATE-TOKEN: $MY_GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data-raw "{ \"body\": \":x: **failed** to build and push one or more images\" }"
+      fi

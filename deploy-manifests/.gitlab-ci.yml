@@ -1,0 +1,49 @@
+stages:
+  - deploy
+
+.setup-ssh: &setup-ssh
+  - command -v ssh-agent >/dev/null || (apk add --update openssh)
+  - eval $(ssh-agent -s)
+  - echo "${SSH_PRIVATE_KEY}" | tr -d '\r' | ssh-add -
+  - mkdir -p ~/.ssh
+  - chmod 700 ~/.ssh
+  - ssh-keyscan ${SERVER_HOST} >> ~/.ssh/known_hosts
+  - chmod 644 ~/.ssh/known_hosts
+
+dev-deploy:
+  stage: deploy
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /dev-deploy/
+      when: always
+    - if: $CI_MERGE_REQUEST_ID
+      when: manual
+  allow_failure: false
+
+  image: alpine:latest
+  before_script:
+    - *setup-ssh
+  script:
+    - chmod +x ./copy-files.sh && ./copy-files.sh --dev
+    - ssh ${SERVER_USER}@${SERVER_HOST} \
+      REGISTRY_USER=${CI_REGISTRY_USER} REGISTRY_PASSWORD=${CI_REGISTRY_PASSWORD} REGISTRY=${CI_REGISTRY} \
+      "bash -s" -- < ./deploy.sh "--dev"
+
+prod-deploy:
+  stage: deploy
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /prod-deploy/
+      when: always
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: always
+    - if: $CI_MERGE_REQUEST_ID
+      when: manual
+  allow_failure: false
+
+  image: alpine:latest
+  before_script:
+    - *setup-ssh
+  script:
+    - chmod +x ./copy-files.sh && ./copy-files.sh --prod
+    - ssh ${SERVER_USER}@${SERVER_HOST} \
+      REGISTRY_USER=${CI_REGISTRY_USER} REGISTRY_PASSWORD=${CI_REGISTRY_PASSWORD} REGISTRY=${CI_REGISTRY} \
+      "bash -s" -- < ./deploy.sh "--prod"

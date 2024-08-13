@@ -1,0 +1,82 @@
+version: "3.8"
+
+services:
+  backend:
+    hostname: backend
+    image: ${REGISTRY}/PROJECT-NAME/backend/backend:20240727_a5fa34c7
+    configs:
+      - source: backend-config
+        target: /app/config.toml
+    ports:
+      - "8082:8080"
+    secrets:
+      - project-prod-postgres-passwd
+    environment:
+      DB_PASS_FILE: /run/secrets/project-prod-postgres-passwd
+    deploy:
+      replicas: 0
+      restart_policy:
+        delay: 5s
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        delay: 10s
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "100M"
+    healthcheck:
+      test: curl --fail http://127.0.0.1:8080/api/service/ping || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - project_prod_default
+      - default
+  frontend:
+    image: ${REGISTRY}/PROJECT-NAME/frontend/front:20240711_24f93474
+    ports:
+      - "3000:80"
+    deploy:
+      replicas: 0
+      restart_policy:
+        delay: 5s
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        delay: 10s
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "100M"
+    healthcheck:
+      test: curl --fail http://127.0.0.1:80/about || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - backend
+networks:
+  default:
+    attachable: true
+  project_prod_default:
+    external: true
+
+configs:
+  backend-config:
+    name: ${PROJECT_DEV_BACKEND_CONFIG}
+    file: ./dev/backend/config.toml
+
+secrets:
+  project-prod-postgres-passwd:
+    external: true
